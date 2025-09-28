@@ -29,7 +29,7 @@ function onEditMaster_(e) {
     LOCK.tryLock(3000);
     if (action.indexOf('ASIGNAR')===0) {
       const status = readGuideStatus_(guideInfo.id, sh.getName(), date, slot);
-      if (status === 'NO DISPONIBLE') { sh.getRange(row, col).setValue('').setNote('Guía marcó NO DISPONIBLE.'); return; }
+      if (status === 'NO DISPONIBLE') { sh.getRange(row, col).setValue('NO DISPONIBLE').setNote('Guía marcó NO DISPONIBLE.'); return; }
       const assignLabel = slot==='M' ? 'ASIGNADO M' : ('ASIGNADO ' + action.split(' ')[1]);
       sh.getRange(row, col).setValue(assignLabel);
       writeGuideAssignment_(guideInfo.id, sh.getName(), date, slot, assignLabel, true);
