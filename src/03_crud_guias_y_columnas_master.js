@@ -14,22 +14,27 @@ function menuAddGuide() {
   const email = String(r2.getResponseText()||'').trim();
   if (!email) throw new Error('Falta email.');
 
+  // Crear archivo con nueva convención de nombre
   const folder = DriveApp.getFolderById(CFG.GUIDES_FOLDER_ID);
-  const guideFile = SpreadsheetApp.create(`GUÍA ${code} — ${name}`);
+  const guideFile = SpreadsheetApp.create(`CALENDARIO_${name}-${code}`);
   DriveApp.getFileById(guideFile.getId()).moveTo(folder);
 
   const guide = SpreadsheetApp.openById(guideFile.getId());
   buildGuideScaffold_(guide, name, code);
 
+  // Registrar e indexar
   const reg = SpreadsheetApp.getActive().getSheetByName(CFG.REGISTRY_SHEET);
   reg.appendRow([new Date(), code, name, email, guideFile.getId(), guideFile.getUrl()]);
   P.setProperty('guide:'+code, JSON.stringify({id: guideFile.getId(), email, name, code}));
+  P.setProperty('guideById:'+guideFile.getId(), code);
 
+  // Añadir columnas del guía en todos los meses del MASTER
   SpreadsheetApp.getActive().getSheets().forEach(sh=>{
-    if (/^\d{2}_\d{4}$/.test(sh.getName())) { addGuideColumnsToMonth_(sh,{code,name}); }
+    if (/^\d{2}_\d{4}$/.test(sh.getName())) addGuideColumnsToMonth_(sh,{code,name});
   });
   applyAllMasterDV_();
 
+  // Activar trigger onEdit para este archivo de guía
   ensureGuideEditTriggerForGuide_(guideFile.getId());
   SpreadsheetApp.getActive().toast(`Guía ${code} añadido`);
 }
@@ -52,20 +57,20 @@ function createGuideMonthSheet_(ss, tag) {
 }
 
 function addGuideColumnsToMonth_(sh, {code, name}) {
-  // Evitar duplicados: buscar cabecera existente "CODE — NAME"
   const lastCol = Math.max(2, sh.getLastColumn());
+  // Evitar duplicado
   for (let c=3; c<=lastCol; c+=2) {
     const head = String(sh.getRange(1,c).getValue()||'').trim();
-    if (head.startsWith(code)) return; // ya existe
+    if (head.startsWith(code)) return;
   }
   sh.insertColumnsAfter(lastCol, 2);
   const startCol = lastCol + 1;
   sh.getRange(1, startCol, 1, 2).merge().setValue(`${code} — ${name}`);
-  sh.getRange(2, startCol).setValue('MAÑANA'); 
+  sh.getRange(2, startCol).setValue('MAÑANA');
   sh.getRange(2, startCol+1).setValue('TARDE');
 }
 
-// ---------- Baja completa ----------
+// Baja completa del guía
 function menuRemoveGuide() {
   const ui = SpreadsheetApp.getUi();
   const ans = ui.prompt('Eliminar guía','Introduce CODIGO o EMAIL', ui.ButtonSet.OK_CANCEL);
@@ -81,11 +86,13 @@ function menuRemoveGuide() {
   }
   if (idx<0) { ui.alert('No encontrado en REGISTRO'); return; }
 
-  const code = String(row[1]).trim(), name = String(row[2]).trim(), guideId = String(row[4]).trim();
-  // 1) Eliminar archivo (a papelera)
+  const code = String(row[1]).trim();
+  const guideId = String(row[4]).trim();
+
+  // Enviar a papelera el archivo
   try { DriveApp.getFileById(guideId).setTrashed(true); } catch(e){}
 
-  // 2) Borrar columnas en todos los meses
+  // Borrar columnas en meses
   const ss = SpreadsheetApp.getActive();
   ss.getSheets().forEach(sh=>{
     if (!/^\d{2}_\d{4}$/.test(sh.getName())) return;
@@ -96,11 +103,10 @@ function menuRemoveGuide() {
     }
   });
 
-  // 3) Quitar del REGISTRO
+  // Limpiar registro, propiedades y triggers
   reg.deleteRow(idx+1);
-
-  // 4) Borrar propiedades y triggers asociados
   P.deleteProperty('guide:'+code);
+  P.deleteProperty('guideById:'+guideId);
   ScriptApp.getProjectTriggers()
     .filter(t => t.getHandlerFunction()==='guideEditHandler_' && t.getTriggerSourceId && t.getTriggerSourceId()===guideId)
     .forEach(t => ScriptApp.deleteTrigger(t));
@@ -108,12 +114,10 @@ function menuRemoveGuide() {
   SpreadsheetApp.getActive().toast(`Guía ${code} eliminado`);
 }
 
-// ---------- Sincronizar meses a guías ----------
 function syncMonthsToGuides() {
   const ss = SpreadsheetApp.getActive();
   ensureInitialMonths_();
 
-  // Para cada guía del REGISTRO, asegurar meses y DV en GUÍA y columnas en MASTER
   const reg = ss.getSheetByName(CFG.REGISTRY_SHEET);
   const rows = reg.getDataRange().getValues().slice(1).filter(r=>r[1] && r[4]);
   const months = CFG.MONTHS_INITIAL.map(toTabName_);
@@ -123,7 +127,7 @@ function syncMonthsToGuides() {
     let gss; try { gss = SpreadsheetApp.openById(id); } catch(e){ return; }
     months.forEach(tab=>{
       if (!gss.getSheetByName(tab)) createGuideMonthSheet_(gss, fromTabTag_(tab));
-      else applyGuideDV_(gss.getSheetByName(tab)); // reasegurar DV/colores
+      else applyGuideDV_(gss.getSheetByName(tab));
       const mSh = ss.getSheetByName(tab); if (mSh) addGuideColumnsToMonth_(mSh, {code,name});
     });
   });
