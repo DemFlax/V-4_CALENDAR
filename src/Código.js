@@ -9,7 +9,7 @@
  * - onEdit local: ASIGNAR/LIBERAR en tiempo real respetando NO DISPONIBLE.
  *******************************************************************************/
 
-const CFG = {
+/*const CFG = {
   TZ: 'Europe/Madrid',
   REGISTRY_SHEET: 'REGISTRO',
   REGISTRY_HEADERS: ['TIMESTAMP','CODIGO','NOMBRE','EMAIL','FILE_ID','URL'],
