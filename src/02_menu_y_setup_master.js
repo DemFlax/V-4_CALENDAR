@@ -6,16 +6,17 @@ function onOpen() {
     .createMenu('Tours Madrid')
     .addItem('Setup inicial', 'setupMaster')
     .addSeparator()
-      .addItem('Añadir guía', 'menuAddGuide')                 // en 03
-      .addItem('Eliminar guía...', 'menuRemoveGuide')         // en 03
+      .addItem('Añadir guía', 'menuAddGuide')                     // en 03
+      .addItem('Eliminar guía...', 'menuRemoveGuide')             // en 03
       .addItem('Sincronizar meses a guías', 'syncMonthsToGuides') // en 03
       .addItem('Reaplicar asignaciones (mes activo)', 'reapplyAssignmentsActiveMonth') // en 05
     .addSeparator()
-      .addItem('Activar guardián anti-ediciones', 'ensureGuideEditTriggersForAllGuides')
-      .addItem('Activar auto-actualización (cada 10 min)', 'enableAutoSyncEvery10m')   // en 07
-      .addItem('Desactivar auto-actualización', 'disableAutoSync')                     // en 07
+      .addItem('Activar guardián anti-ediciones', 'ensureGuideEditTriggersForAllGuides') // en 06
+      .addItem('Activar auto-actualización (cada 10 min)', 'enableAutoSyncEvery10m')     // en 07
+      .addItem('Desactivar auto-actualización', 'disableAutoSync')                       // en 07
     .addSeparator()
       .addItem('Crear disparador onEdit', 'createOnEditTrigger') // en 05
+      .addItem('Reaplicar formato (MASTER + guías)', 'applyAllFormatting_')
     .addToUi();
 }
 
@@ -67,12 +68,14 @@ function refreshGuideIndexFromRegistry_(){
   if (!reg) return;
   const rows = reg.getDataRange().getValues().slice(1);
   // Limpia índice previo
-  Object.keys(P.getProperties()).forEach(k=>{ if (k.indexOf('guide:')===0 || k.indexOf('guideById:')===0) P.deleteProperty(k); });
+  Object.keys(P.getProperties()).forEach(k=>{
+    if (k.indexOf('guide:')===0 || k.indexOf('guideById:')===0) P.deleteProperty(k);
+  });
   // Indexa
   rows.forEach(r=>{
-    const code = String(r[1]||'').trim();
+    const code = String(r[1]||'').trim().toUpperCase();
     const name = String(r[2]||'').trim();
-    const email= String(r[3]||'').trim();
+    const email= String(r[3]||'').trim().toLowerCase();
     const id   = String(r[4]||'').trim();
     const url  = String(r[5]||'').trim();
     if (!code || !id) return;

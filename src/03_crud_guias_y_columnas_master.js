@@ -1,5 +1,6 @@
 /***** 03_crud_guias_y_columnas_master.gs ******************************
  * Alta/baja de guías, creación de archivos y columnas en MASTER.
+ * Bloqueo de duplicados en el alta. Auto-compartir por archivo.
  ***********************************************************************/
 
 function menuAddGuide() {
@@ -7,44 +8,65 @@ function menuAddGuide() {
   const r1 = ui.prompt('Nuevo guía','Formato: "Nombre; CODIGO"', ui.ButtonSet.OK_CANCEL);
   if (r1.getSelectedButton() !== ui.Button.OK) return;
   const parts = String(r1.getResponseText()||'').split(/[;,]/).map(s=>s.trim()).filter(Boolean);
-  const name = parts[0]||''; const code = parts[1]||'';
+  const name = parts[0]||''; const code = (parts[1]||'').toUpperCase();
   if (!name || !code) throw new Error('Faltan datos: "Nombre; CODIGO".');
 
   const r2 = ui.prompt('Email del guía','Email de Google del guía', ui.ButtonSet.OK_CANCEL);
   if (r2.getSelectedButton() !== ui.Button.OK) return;
-  const email = String(r2.getResponseText()||'').trim();
+  const email = String(r2.getResponseText()||'').trim().toLowerCase();
   if (!email) throw new Error('Falta email.');
 
   addGuide_({code, name, email});
 }
 
 function addGuide_({code,name,email}){
+  // Normaliza
+  code = String(code||'').trim().toUpperCase();
+  name = String(name||'').trim();
+  email= String(email||'').trim().toLowerCase();
+
+  // Bloqueos de duplicados en REGISTRO
+  const master = SpreadsheetApp.getActive();
+  const reg = master.getSheetByName(CFG.REGISTRY_SHEET) || master.insertSheet(CFG.REGISTRY_SHEET);
+  if (reg.getLastRow() === 0) reg.getRange(1,1,1,CFG.REGISTRY_HEADERS.length).setValues([CFG.REGISTRY_HEADERS]);
+  const rows = reg.getDataRange().getValues().slice(1);
+
+  const codeExists = rows.some(r => String(r[1]||'').trim().toUpperCase() === code);
+  if (codeExists) { master.toast('Código ya existente. Operación cancelada.'); return; }
+
+  const emailExists = rows.some(r => String(r[3]||'').trim().toLowerCase() === email);
+  if (emailExists) { master.toast('Email ya usado por otro guía. Operación cancelada.'); return; }
+
+  if (P.getProperty('guide:'+code)) { master.toast('Código ya indexado. Operación cancelada.'); return; }
+
+  // Crear archivo del guía
   const folderId = (CFG.GUIDES_FOLDER_ID || CFG.DEST_FOLDER_ID);
   const folder = DriveApp.getFolderById(folderId);
   const ssGuide = SpreadsheetApp.create(`CALENDARIO_${name}-${code}`);
   const file = DriveApp.getFileById(ssGuide.getId());
   folder.addFile(file); DriveApp.getRootFolder().removeFile(file);
 
-  buildGuideScaffold_(ssGuide, name, code); // crea meses iniciales
+  // Seguridad y compartición automática: solo manager + guía
+  lockDownGuideFile_(ssGuide.getId(), email); // <<<<<<
+
+  // Scaffold + meses
+  buildGuideScaffold_(ssGuide, name, code);
   const url = ssGuide.getUrl();
 
   // Registrar en REGISTRO
-  const master = SpreadsheetApp.getActive();
-  const reg = master.getSheetByName(CFG.REGISTRY_SHEET) || master.insertSheet(CFG.REGISTRY_SHEET);
-  if (reg.getLastRow() === 0) reg.getRange(1,1,1,CFG.REGISTRY_HEADERS.length).setValues([CFG.REGISTRY_HEADERS]);
   reg.appendRow([new Date(), code, name, email, ssGuide.getId(), url]);
 
-  // Índices en ScriptProperties
+  // Índices
   P.setProperty('guide:'+code, JSON.stringify({code,name,email,id:ssGuide.getId(),url}));
   P.setProperty('guideById:'+ssGuide.getId(), code);
 
-  // Añadir columnas del guía en todos los meses del MASTER (idempotente)
+  // Añadir columnas idempotentes en todos los meses
   master.getSheets().forEach(sh=>{
     if (/^\d{2}_\d{4}$/.test(sh.getName())) addGuideColumnsToMonth_(sh,{code,name});
   });
   applyAllMasterDV_(); // en 04
 
-  // Disparador onEdit para ese Spreadsheet de guía (guardían)
+  // Trigger guardián en el archivo del guía
   ensureGuideEditTriggerForGuide_(ssGuide.getId()); // en 06
 
   // Email al guía
@@ -55,63 +77,59 @@ function addGuide_({code,name,email}){
 
 function menuRemoveGuide(){
   const ui = SpreadsheetApp.getUi();
-  const r = ui.prompt('Eliminar guía','Escribe el CÓDIGO del guía a eliminar (también se enviará el archivo a la papelera)', ui.ButtonSet.OK_CANCEL);
+  const r = ui.prompt('Eliminar guía','Escribe el CÓDIGO del guía a eliminar (se enviará el archivo a la papelera)', ui.ButtonSet.OK_CANCEL);
   if (r.getSelectedButton() !== ui.Button.OK) return;
-  const code = String(r.getResponseText()||'').trim();
+  const code = String(r.getResponseText()||'').trim().toUpperCase();
   if (!code) return;
-  removeGuide_(code);
+  removeGuide_(code, {deleteAllWithSameCode:true});
 }
 
 /** Elimina columnas en MASTER, REGISTRO, propiedades, triggers y envía a papelera el archivo del guía. */
-function removeGuide_(code){
+function removeGuide_(code, opts){
+  code = String(code||'').trim().toUpperCase();
+  const deleteAll = !!(opts && opts.deleteAllWithSameCode);
+
   const ss = SpreadsheetApp.getActive();
   const reg = ss.getSheetByName(CFG.REGISTRY_SHEET);
-  let guideId = '', rowToDelete = -1;
+  if (!reg) { ss.toast('No hay REGISTRO'); return; }
+  const data = reg.getDataRange().getValues();
 
-  if (reg){
-    const data = reg.getDataRange().getValues();
-    for (let i=1; i<data.length; i++){
-      if (String(data[i][1]).trim() === code){
-        guideId = String(data[i][4]||'').trim();
-        rowToDelete = i+1;
-        break;
-      }
-    }
+  // Recoge filas con ese código
+  const rowsIdx = [];
+  for (let i=1;i<data.length;i++){
+    if (String(data[i][1]||'').trim().toUpperCase() === code) rowsIdx.push(i+1);
   }
+  if (!rowsIdx.length){ ss.toast('Código no encontrado'); return; }
 
-  // 1) Borrar columnas en cada mes
+  // Borra columnas en cada mes del MASTER una sola vez
   ss.getSheets().forEach(sh => {
     if (!/^\d{2}_\d{4}$/.test(sh.getName())) return;
     const colStart = findGuideColumnsInMonth_(sh, code);
     if (colStart) sh.deleteColumns(colStart, 2);
   });
 
-  // 2) Borrar fila de REGISTRO
-  if (reg && rowToDelete > 1) reg.deleteRow(rowToDelete);
-
-  // 3) Borrar propiedades índice
-  Object.keys(P.getProperties()).forEach(k=>{
-    if (k === 'guide:'+code) P.deleteProperty(k);
-    if (k.indexOf('guideById:')===0 && P.getProperty(k)===code) P.deleteProperty(k);
+  // Para cada fila encontrada: limpia propiedades, triggers y mueve archivo a papelera
+  const toDeleteRows = deleteAll ? rowsIdx.slice() : [rowsIdx[0]];
+  toDeleteRows.sort((a,b)=>b-a).forEach(rowNum=>{
+    const row = reg.getRange(rowNum,1,1,reg.getLastColumn()).getValues()[0];
+    const guideId = String(row[4]||'').trim();
+    if (guideId){
+      ScriptApp.getProjectTriggers()
+        .filter(t => t.getTriggerSourceId && t.getTriggerSourceId() === guideId)
+        .forEach(t => ScriptApp.deleteTrigger(t));
+      try { DriveApp.getFileById(guideId).setTrashed(true); } catch(_){}
+      P.deleteProperty('guideById:'+guideId);
+    }
+    reg.deleteRow(rowNum);
   });
 
-  // 4) Eliminar triggers del proyecto asociados a ese Spreadsheet de guía
-  if (guideId){
-    ScriptApp.getProjectTriggers()
-      .filter(t => t.getTriggerSourceId && t.getTriggerSourceId() === guideId)
-      .forEach(t => ScriptApp.deleteTrigger(t));
-  }
-
-  // 5) Enviar archivo del guía a papelera
-  if (guideId){
-    try { DriveApp.getFileById(guideId).setTrashed(true); } catch(e){}
-  }
-
-  ss.toast(`Guía ${code} eliminado por completo`);
+  P.deleteProperty('guide:'+code);
+  ss.toast(`Guía ${code} eliminado`);
 }
 
 /** Inserta columnas M/T para un guía en el MASTER si no existen */
 function addGuideColumnsToMonth_(mSheet,{code,name}){
+  code = String(code||'').trim().toUpperCase();
   const existsAt = findGuideColumnsInMonth_(mSheet, code);
   if (existsAt) return; // idempotente
 
@@ -125,10 +143,13 @@ function addGuideColumnsToMonth_(mSheet,{code,name}){
 
 /** Localiza el par de columnas del guía en un mes del MASTER */
 function findGuideColumnsInMonth_(mSheet, code){
+  code = String(code||'').trim().toUpperCase();
   const lastCol = mSheet.getLastColumn();
   for (let c=3; c<=lastCol; c+=2){
     const head = String(mSheet.getRange(1,c).getValue()||'').trim();
-    if (head && head.split('—')[0].trim() === code) return c;
+    if (!head) continue;
+    const cCode = head.split('—')[0].trim().toUpperCase();
+    if (cCode === code) return c;
   }
   return 0;
 }
@@ -144,7 +165,7 @@ function syncMonthsToGuides(){
   const months = CFG.MONTHS_INITIAL.map(toTabName_);
 
   rows.forEach(r=>{
-    const code = String(r[1]).trim(), name = String(r[2]).trim(), id = String(r[4]).trim();
+    const code = String(r[1]).trim().toUpperCase(), name = String(r[2]).trim(), id = String(r[4]).trim();
     let gss; try { gss = SpreadsheetApp.openById(id); } catch(e){ return; }
     months.forEach(tab=>{
       if (!gss.getSheetByName(tab)) createGuideMonthSheet_(gss, fromTabTag_(tab));
@@ -175,4 +196,24 @@ function createGuideMonthSheet_(ss, tag) {
   sh.setFrozenRows(2);
   sh.getRange(3,1,grid.length,7).setValues(grid);
   applyGuideDV_(sh); // en 04
+}
+
+/** ===== Compartición segura por archivo =====
+ *  Restringe el archivo y da edición solo al guía. Evita que editores re-compartan.
+ */
+function lockDownGuideFile_(fileId, guideEmail){
+  const file = DriveApp.getFileById(fileId);
+  // Restringido, sin enlace público ni de dominio
+  file.setSharing(DriveApp.Access.PRIVATE, DriveApp.Permission.NONE); // restricción total :contentReference[oaicite:2]{index=2}
+  // Evitar que editores vuelvan a compartir
+  file.setShareableByEditors(false); // :contentReference[oaicite:3]{index=3}
+  // Añadir al guía como editor
+  file.addEditor(guideEmail); // :contentReference[oaicite:4]{index=4}
+  // Limpieza de espectadores/editores extra
+  const me = Session.getEffectiveUser().getEmail();
+  file.getEditors().forEach(u => {
+    const e = u.getEmail && u.getEmail();
+    if (e && e !== guideEmail && e !== me) file.removeEditor(u);
+  });
+  file.getViewers().forEach(u => file.removeViewer(u));
 }

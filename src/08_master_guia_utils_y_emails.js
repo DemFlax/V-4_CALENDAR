@@ -57,16 +57,38 @@ function writeGuideAssignment_(guideId,tag,dateObj,slot,value,lockCell){
   return true;
 }
 
-/* ====== Bookeo utils ====== */
-function findBookeoEventBySlot_(dateObj,slot){
+/** Busca el evento Bookeo exacto por fecha y slot.
+ *  Fallback: si slot === 'T1' y no hay evento estándar, prueba 17:15 y 17:30.
+ */
+function findBookeoEventBySlot_(dateObj, slot){
   const cal = CalendarApp.getCalendarById(CFG.BOOKEO_CAL_ID);
   if (!cal) return null;
-  const start = slotStartDate_(dateObj,slot); // helper en 01
-  if (!start) return null;
-  const end = new Date(start.getTime()+60*1000);
-  const evs = cal.getEvents(start,end);
-  return evs && evs.length ? evs[0] : null;
+
+  // Utilidad: buscar en una ventana de 1 min a una hora/minuto concretos
+  const tryAtHM = (h, m) => {
+    const d = new Date(dateObj); d.setHours(h, m, 0, 0); // hora local
+    const evs = cal.getEvents(d, new Date(d.getTime() + 60*1000)); // ventana de 1 min
+    return evs.length ? evs[0] : null;
+  };
+
+  // 1) Intento estándar según mapeo de slots
+  const std = slotStartDate_(dateObj, slot); // ya existe en 01
+  if (std){
+    const evs = cal.getEvents(std, new Date(std.getTime() + 60*1000));
+    if (evs.length) return evs[0];
+  }
+
+  // 2) Fallback solo para T1: tours residuales 17:15 o 17:30
+  if (slot === 'T1'){
+    let ev = tryAtHM(17, 15);
+    if (ev) return ev;
+    ev = tryAtHM(17, 30);
+    if (ev) return ev;
+  }
+
+  return null; // no encontrado
 }
+
 
 function inviteGuideToEvent_(event,email){
   try{
